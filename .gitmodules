@@ -33,13 +33,13 @@
 	url = https://github.com/LoopKit/LogglyService.git
 [submodule "OmniBLE"]
 	path = OmniBLE
-	url = https://github.com/LoopKit/OmniBLE.git
+	url = https://github.com/jakalm/OmniBLE.git
 [submodule "NightscoutRemoteCGM"]
 	path = NightscoutRemoteCGM
 	url = https://github.com/LoopKit/NightscoutRemoteCGM.git
 [submodule "LoopSupport"]
 	path = LoopSupport
-	url = https://github.com/LoopKit/LoopSupport
+	url = https://github.com/jakalm/LoopSupport.git
 [submodule "G7SensorKit"]
 	path = G7SensorKit
 	url = https://github.com/LoopKit/G7SensorKit.git
