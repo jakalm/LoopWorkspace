@@ -15,7 +15,7 @@
 	url = https://github.com/LoopKit/RileyLinkKit
 [submodule "NightscoutService"]
 	path = NightscoutService
-	url = https://github.com/LoopKit/NightscoutService.git
+	url = https://github.com/jakalm/NightscoutService.git
 [submodule "Minizip"]
 	path = Minizip
 	url = https://github.com/LoopKit/Minizip.git
