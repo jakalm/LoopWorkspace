@@ -1,0 +1,5 @@
+data/
+data_*/
+*.json
+__pycache__/
+.pytest_cache/
