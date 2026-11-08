@@ -7,6 +7,7 @@ from therapy_estimator.estimate import suggest, validate
 from therapy_estimator.features import Config, build_steps
 from therapy_estimator.models import ExponentialInsulinModel, piecewise_linear_absorbed
 from therapy_estimator.nightscout import load
+from therapy_estimator.podage import pod_age_effect
 from therapy_estimator.synthetic import generate, true_values
 
 BLOCKS = (0, 4, 8, 12, 16, 20)
@@ -107,3 +108,10 @@ def test_beats_current_settings_on_held_out_days(realistic_sim):
     for h in (60, 120):
         e = v["errors"][h]
         assert e["skattad"]["rmse"] < 0.9 * e["nuvarande"]["rmse"]
+
+
+def test_finds_weaker_insulin_on_pod_day_three(tmp_path):
+    generate(tmp_path, days=60, controller="autobolus", fat_protein=0.4, pod_day_factors=(1.0, 1.0, 0.8))
+    r = pod_age_effect(load(tmp_path), Config(), n_boot=2)
+    assert r["factor"][1] == pytest.approx(1.0, abs=0.05)
+    assert r["factor"][2] == pytest.approx(0.8, abs=0.05)

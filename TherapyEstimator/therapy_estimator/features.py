@@ -30,6 +30,9 @@ class Config:
     carb_delay_min: float = 10.0
     carb_absorption_scale: float = 1.0
     default_absorption_min: float = 180.0
+    # Local start hours of meal groups that get their own absorption shape, e.g. (4, 10, 15, 21) for
+    # breakfast, lunch, dinner and evening; None gives one shape for all meals.
+    meal_group_hours: tuple | None = None
     drift_hours: int = 12  # 0 disables the drift offsets
     hypo_mgdl: float = 70.0
     post_hypo_min: float = 120.0
@@ -41,15 +44,27 @@ class Config:
     def n_blocks(self):
         return len(self.block_hours)
 
+    @property
+    def n_meal_groups(self):
+        return len(self.meal_group_hours) if self.meal_group_hours else 1
+
+    def meal_group_of(self, sec_of_day):
+        if not self.meal_group_hours:
+            return np.zeros(len(sec_of_day), dtype=np.int64)
+        starts = np.array(self.meal_group_hours, dtype=float) * 3600
+        g = np.searchsorted(starts, sec_of_day, side="right") - 1
+        return np.where(g < 0, len(starts) - 1, g)
+
 
 @dataclass
 class Steps:
     t: np.ndarray  # step boundary times, epoch s (N + 1)
     bg: np.ndarray  # glucose at boundaries, mg/dL, NaN when missing (N + 1)
     ia: np.ndarray  # insulin effect during step, U (N)
+    ia_pod: np.ndarray  # same, split by pod age at delivery: day 1, day 2, day 3+, unknown (N x 4)
     sched: np.ndarray  # scheduled basal delivered per step under the profile in effect, U (N)
     basal: np.ndarray  # basal actually delivered per step (scheduled or temp), U (N)
-    carbs: np.ndarray  # carbs absorbed during step by entry block and absorption basis, g (N x K x B)
+    carbs: np.ndarray  # carbs absorbed during step by entry block and (meal group, absorption basis), g (N x K x G*B)
     block: np.ndarray  # time of day block per step (N)
     segment: np.ndarray  # drift segment per step (N)
     n_segments: int
@@ -80,6 +95,24 @@ def _local_seconds(times, tz):
     sec = lt.hour.values * 3600 + lt.minute.values * 60 + lt.second.values
     day = lt.normalize().tz_localize(None).values.astype("datetime64[D]").astype(np.int64)
     return sec, day
+
+
+def _pod_day(ds, times, min_life_h=40, max_life_h=84):
+    """Pod age in whole days at each time (0, 1, 2 for day 3 and later), or 3 when unknown. Pods whose
+    next site change is missing or implausibly far away count as unknown."""
+    changes = np.sort(ds.events[ds.events.kind == "site_change"].time.values)
+    out = np.full(len(times), 3, dtype=np.int64)
+    if not len(changes):
+        return out
+    j = np.searchsorted(changes, times, side="right") - 1
+    has = j >= 0
+    last = changes[np.clip(j, 0, None)]
+    nxt = np.append(changes, np.inf)[np.clip(j + 1, 0, len(changes))]
+    age_h = (times - last) / 3600
+    life_h = (nxt - last) / 3600
+    ok = has & (age_h < max_life_h) & (((life_h >= min_life_h) & (life_h <= max_life_h)) | np.isinf(nxt))
+    out[ok] = np.minimum(age_h[ok] // 24, 2).astype(np.int64)
+    return out
 
 
 def _block_of(sec, cfg):
@@ -127,15 +160,21 @@ def build_steps(ds, cfg: Config) -> Steps:
         delivered[lo:hi] += units / span
 
     model = ExponentialInsulinModel(*cfg.insulin)
-    ia_min = np.convolve(delivered, model.minute_kernel())[:m]
+    kernel = model.minute_kernel()
+    ia_min = np.convolve(delivered, kernel)[:m]
+    pod_day = _pod_day(ds, tmin)
+    ia_pod = np.stack([np.convolve(delivered * (pod_day == d), kernel)[:m].reshape(n, STEP_MIN).sum(1)
+                       for d in range(4)], axis=1)
 
     n_basis = len(ABSORPTION_BASIS)
-    carbs_min = np.zeros((m, k_blocks, n_basis))
+    n_cols = cfg.n_meal_groups * n_basis
+    carbs_min = np.zeros((m, k_blocks, n_cols))
+    entry_block, entry_group = [], []
     if len(ds.carbs):
         entry_sec, _ = _local_seconds(ds.carbs.time.values, tz)
-        entry_block = _block_of(entry_sec, cfg)
-    for (ts, grams, absorption), b in zip(ds.carbs[["time", "grams", "absorption_min"]].itertuples(index=False),
-                                          entry_block if len(ds.carbs) else []):
+        entry_block, entry_group = _block_of(entry_sec, cfg), cfg.meal_group_of(entry_sec)
+    for (ts, grams, absorption), b, grp in zip(ds.carbs[["time", "grams", "absorption_min"]].itertuples(index=False),
+                                               entry_block, entry_group):
         if np.isnan(absorption):
             absorption = cfg.default_absorption_min
         s = (ts - t0) / 60 + cfg.carb_delay_min
@@ -144,11 +183,11 @@ def build_steps(ds, cfg: Config) -> Steps:
             lo, hi = max(int(np.floor(s)), 0), min(int(np.ceil(s + T)) + 1, m)
             if hi > lo:
                 k = np.arange(lo, hi)
-                carbs_min[lo:hi, b, j] += grams * (piecewise_linear_absorbed((k + 1 - s) / T)
+                carbs_min[lo:hi, b, grp * n_basis + j] += grams * (piecewise_linear_absorbed((k + 1 - s) / T)
                                                    - piecewise_linear_absorbed((k - s) / T))
 
     ia = ia_min.reshape(n, STEP_MIN).sum(1)
-    carbs = carbs_min.reshape(n, STEP_MIN, k_blocks, n_basis).sum(1)
+    carbs = carbs_min.reshape(n, STEP_MIN, k_blocks, n_cols).sum(1)
 
     tb_bounds = t0 + 300 * np.arange(n + 1)
     gt, gv = ds.glucose.time.values, ds.glucose.mgdl.values
@@ -205,7 +244,7 @@ def build_steps(ds, cfg: Config) -> Steps:
         ev_mask[max(a, 0):max(min(b, n), 0)] = True
     exclude("sensorstart/podbyte", ev_mask)
 
-    return Steps(t=tb_bounds, bg=bg, ia=ia, sched=sched.reshape(n, STEP_MIN).sum(1) / 60.0,
+    return Steps(t=tb_bounds, bg=bg, ia=ia, ia_pod=ia_pod, sched=sched.reshape(n, STEP_MIN).sum(1) / 60.0,
                  basal=np.where(np.isnan(temp), sched, temp).reshape(n, STEP_MIN).sum(1) / 60.0, carbs=carbs, block=block,
                  segment=segment, n_segments=n_segments, day=day, valid=valid, exclusions=reasons,
                  n_blocks=k_blocks)
@@ -214,7 +253,7 @@ def build_steps(ds, cfg: Config) -> Steps:
 @dataclass
 class Windows:
     X: np.ndarray  # design matrix, carb columns zero until filled by fit
-    Xc: np.ndarray  # carbs absorbed per entry block and absorption basis (n x K x B)
+    Xc: np.ndarray  # carbs absorbed per entry block and (meal group, absorption basis) (n x K x G*B)
     y: np.ndarray
     start: np.ndarray  # step index of window start
     stride: int

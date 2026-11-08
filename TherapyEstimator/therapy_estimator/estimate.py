@@ -5,7 +5,7 @@ from dataclasses import replace
 import numpy as np
 
 from .features import ABSORPTION_BASIS, build_steps, build_windows
-from .fit import DEFAULT_SHAPE, bootstrap_settings, fit, prediction_errors, settings_point, theta_from_profile
+from .fit import DEFAULT_SHAPE, bootstrap_settings, default_shape, fit, prediction_errors, settings_point, theta_from_profile
 from .models import MGDL_PER_MMOL, piecewise_linear_absorbed
 
 
@@ -20,7 +20,7 @@ def validate(ds, cfg, fit_kw, window_min):
     train, test = split_days(steps)
     theta0 = theta_from_profile(ds.profiles[-1], cfg.block_hours, steps.n_segments)
     res = fit(build_windows(steps, window_min, window_min, train), theta0, cfg.n_blocks, **fit_kw)
-    models = {"nuvarande": (theta0, DEFAULT_SHAPE), "skattad": (res.theta, res.shape)}
+    models = {"nuvarande": (theta0, default_shape(cfg.n_meal_groups)), "skattad": (res.theta, res.shape)}
     errs = {h: prediction_errors(steps, models, h, test) for h in (30, 60, 120)}
     return {"errors": errs, "train_days": train, "test_days": test}
 
@@ -106,10 +106,15 @@ def format_report(result, cfg, validation, tuning=None):
     res = result["fit"]
     lines.append(f"\nAnpassning på all data: {res.n} fönster, residual {res.sigma:.1f} mg/dL, "
                  f"autokorrelation {res.rho:.2f}.")
-    fr = [absorbed_fraction(res.shape, p) for p in (0.25, 0.5, 1.0)]
-    lines.append("Inlärd kolhydratabsorption, andel absorberad vid 25/50/100 % av angiven absorptionstid: "
-                 f"{fr[0]:.0%} / {fr[1]:.0%} / {fr[2]:.0%} (Loops standardkurva: "
-                 f"{absorbed_fraction(DEFAULT_SHAPE, 0.25):.0%} / {absorbed_fraction(DEFAULT_SHAPE, 0.5):.0%} / 100%).")
+    lines.append("Inlärd kolhydratabsorption, andel absorberad vid 25/50/100 % av angiven absorptionstid "
+                 f"(Loops standardkurva: {absorbed_fraction(DEFAULT_SHAPE, 0.25):.0%} / "
+                 f"{absorbed_fraction(DEFAULT_SHAPE, 0.5):.0%} / 100%):")
+    groups = res.shape.reshape(-1, len(ABSORPTION_BASIS))
+    hours = cfg.meal_group_hours or (0,)
+    for g, shape in enumerate(groups):
+        fr = [absorbed_fraction(shape, p) for p in (0.25, 0.5, 1.0)]
+        label = "alla måltider" if len(groups) == 1 else f"måltider från {hours[g]:02d}:00"
+        lines.append(f"  {label}: {fr[0]:.0%} / {fr[1]:.0%} / {fr[2]:.0%}")
 
     titles = {"basal": "Basal (E/h)", "isf": f"Insulinkänslighet ({isf_unit})", "cr": "Kolhydratkvot (g/E)"}
     edges = list(cfg.block_hours) + [24]

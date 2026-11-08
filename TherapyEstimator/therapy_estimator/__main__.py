@@ -29,12 +29,20 @@ def main(argv=None):
     e.add_argument("--smooth", type=float, default=0.2, help="tillåten relativ skillnad mellan grannblock")
     e.add_argument("--tune", action="store_true", help="trimma insulintopp och absorptionstid")
     e.add_argument("--tz", default="Europe/Stockholm", help="lokal tidszon för dygnsblocken")
+    e.add_argument("--meal-groups", default=None, metavar="TIMMAR",
+                   help="egen absorptionskurva per måltidsgrupp, starttimmar t.ex. 4,10,15,21. Kan dra ner ISF; "
+                        "använd för att se absorptionstider, inte för inställningar")
     e.add_argument("--json", default=None, help="spara resultatet som JSON")
 
     c = sub.add_parser("check", help="modellfria kontroller av datan")
     c.add_argument("--data", default="data")
     c.add_argument("--insulin", choices=sorted(INSULIN_PRESETS), default="rapid-adult")
     c.add_argument("--tz", default="Europe/Stockholm")
+
+    pa = sub.add_parser("podage", help="insulineffekt per poddag")
+    pa.add_argument("--data", default="data")
+    pa.add_argument("--insulin", choices=sorted(INSULIN_PRESETS), default="rapid-adult")
+    pa.add_argument("--tz", default="Europe/Stockholm")
 
     s = sub.add_parser("synth", help="generera syntetisk testdata")
     s.add_argument("--out", default="data_synth")
@@ -52,6 +60,13 @@ def main(argv=None):
         from .checks import run_checks
         from .nightscout import load
         print(run_checks(load(a.data), Config(insulin=INSULIN_PRESETS[a.insulin], timezone=a.tz)))
+    elif a.cmd == "podage":
+        from .nightscout import load
+        from .podage import POD_DAYS, pod_age_effect
+        r = pod_age_effect(load(a.data), Config(insulin=INSULIN_PRESETS[a.insulin], timezone=a.tz))
+        print("Insulineffekt jämfört med poddag 1 (80 % intervall, andel av insulinet):")
+        for i, name in enumerate(POD_DAYS[1:], start=1):
+            print(f"  {name}: {r['factor'][i]:.2f} ({r['p10'][i]:.2f}–{r['p90'][i]:.2f}, {r['insulin_share'][i]:.0%})")
     elif a.cmd == "synth":
         from .synthetic import generate
         print(generate(a.out, a.days, a.seed))
@@ -60,7 +75,8 @@ def main(argv=None):
         from .nightscout import load
         ds = load(a.data)
         cfg = Config(block_hours=tuple(int(x) for x in a.blocks.split(",")), insulin=INSULIN_PRESETS[a.insulin],
-                     timezone=a.tz)
+                     timezone=a.tz,
+                     meal_group_hours=tuple(int(x) for x in a.meal_groups.split(",")) if a.meal_groups else None)
         cfg, result, validation, report = run(ds, cfg, {"prior_rel": a.prior, "smooth_rel": a.smooth},
                                               a.window, a.tune)
         print(report)

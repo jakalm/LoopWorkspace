@@ -12,10 +12,12 @@ export NS_TOKEN=...            # token med rollen "readable" (Admin Tools i Nigh
 python3 -m therapy_estimator fetch --days 60          # sparar till data/
 python3 -m therapy_estimator estimate --tune          # rapport + förslag
 python3 -m therapy_estimator check                    # modellfria kontroller (korrigeringar, nätter, känningar)
+python3 -m therapy_estimator podage                   # insulineffekt per poddag jämfört med dag 1
 ```
 
 Flaggor för `estimate`: `--insulin {rapid-adult,rapid-child,fiasp,lyumjev}` (välj samma som i Loop),
-`--blocks 0,4,8,12,16,20` (blockens starttimmar), `--json fil.json`.
+`--blocks 0,4,8,12,16,20` (blockens starttimmar), `--json fil.json`, `--meal-groups 4,10,15,21`
+(egen absorptionskurva per måltid; bra för att se absorptionstider, men kan dra ner ISF i simuleringar).
 
 Testa med syntetisk data: `python3 -m therapy_estimator synth --out data_synth` och
 `python3 -m therapy_estimator estimate --data data_synth`. Tester: `python3 -m pytest tests`.

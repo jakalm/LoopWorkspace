@@ -59,7 +59,8 @@ def true_values(data_dir, block_hours, tz="Europe/Stockholm"):
 
 def generate(out_dir, days=42, seed=1, tz="Europe/Stockholm", start="2026-09-01",
              egp_drift_sd=0.08, day_sd=0.08, absorption_jitter=(0.8, 1.3), carb_shape="gamma",
-             controller="tempbasal", fat_protein=0.0):
+             controller="tempbasal", fat_protein=0.0,
+             pod_day_factors=(1.0, 1.0, 1.0)):
     rng = np.random.default_rng(seed)
     t0 = pd.Timestamp(start, tz=tz).tz_convert("UTC").timestamp()
     m = days * 1440
@@ -89,8 +90,13 @@ def generate(out_dir, days=42, seed=1, tz="Europe/Stockholm", start="2026-09-01"
 
     treatments, sensitivity_boost, meal_truth = [], np.ones(m), []
 
+    site_minutes = np.arange(0, days, 3) * 1440 + 1200
+    pod_day = np.clip(((np.arange(m) - site_minutes[np.clip(np.searchsorted(site_minutes, np.arange(m), side="right") - 1,
+                                                              0, None)]) // 1440), 0, 2).astype(int)
+    pod_factor = np.array(pod_day_factors)[pod_day]
+
     def deliver(i, units, sched_rate):
-        ia[i:i + L] += units * act
+        ia[i:i + L] += units * act * pod_factor[i]
         net_iob[i:i + L] += (units - sched_rate / 60) * per
 
     def eat(i, grams, absorb_min, logged, logged_absorb):

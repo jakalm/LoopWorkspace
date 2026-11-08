@@ -11,11 +11,15 @@ from .features import ABSORPTION_BASIS, build_windows
 DEFAULT_SHAPE = np.array([1.0 if f == 1.0 else 0.0 for f in ABSORPTION_BASIS])
 
 
+def default_shape(n_groups):
+    return np.tile(DEFAULT_SHAPE, n_groups)
+
+
 @dataclass
 class FitResult:
     theta: np.ndarray
     cov: np.ndarray  # conditional on the absorption shape
-    shape: np.ndarray  # weights per ABSORPTION_BASIS entry, sum 1
+    shape: np.ndarray  # weights per (meal group, ABSORPTION_BASIS entry), summing to 1 within each group
     sigma: float  # robust residual scale, mg/dL
     rho: float  # lag 1 autocorrelation of residuals between adjacent windows
     n: int
@@ -78,19 +82,24 @@ def _fit_theta(X, y, windows, theta0, P, prior_sd, huber_k, theta, n_iter=30):
 
 
 def _fit_shape(windows, theta, k, w, sigma, shape_prior_sd):
-    """Absorption weights given theta: non negative, summing to one, shrunk towards Loop's default curve."""
+    """Absorption weights given theta: non negative, summing to one per meal group, shrunk towards Loop's
+    default curve."""
     X0 = windows.X.copy()
     X0[:, 2 * k:3 * k] = 0
     r0 = windows.y - X0 @ theta
     Z = np.einsum("nkb,k->nb", windows.Xc, theta[2 * k:3 * k])
     sw = np.sqrt(w) / sigma
     nb = Z.shape[1]
+    n_groups = nb // len(ABSORPTION_BASIS)
     big = 1e3 * np.sqrt(len(r0))
     lam = 1.0 / shape_prior_sd
-    A = np.vstack([Z * sw[:, None], big * np.ones((1, nb)), lam * np.eye(nb)])
-    b = np.concatenate([r0 * sw, [big], lam * DEFAULT_SHAPE])
+    sums = np.kron(np.eye(n_groups), np.ones((1, len(ABSORPTION_BASIS))))
+    A = np.vstack([Z * sw[:, None], big * sums, lam * np.eye(nb)])
+    b = np.concatenate([r0 * sw, np.full(n_groups, big), lam * default_shape(n_groups)])
     s, _ = nnls(A, b)
-    return s / s.sum()
+    s = s.reshape(n_groups, -1)
+    s = np.where(s.sum(1, keepdims=True) > 0, s / np.maximum(s.sum(1, keepdims=True), 1e-12), DEFAULT_SHAPE)
+    return s.ravel()
 
 
 def fit(windows, theta0, n_blocks, prior_rel=0.5, smooth_rel=0.2, drift_rel=0.1, huber_k=1.345,
@@ -101,7 +110,7 @@ def fit(windows, theta0, n_blocks, prior_rel=0.5, smooth_rel=0.2, drift_rel=0.1,
     Alternates between the linear parameters and the absorption shape."""
     k = n_blocks
     P, prior_sd = _prior_precision(theta0, k, prior_rel, smooth_rel, drift_rel)
-    shape = DEFAULT_SHAPE.copy()
+    shape = default_shape(windows.Xc.shape[2] // len(ABSORPTION_BASIS))
     theta = theta0.copy()
     for _ in range(n_outer if learn_shape else 1):
         theta, A, sigma, w, rho = _fit_theta(windows.design(shape), windows.y, windows, theta0, P, prior_sd,
